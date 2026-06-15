@@ -7,6 +7,7 @@ import { getRuDescription, getTvSymbol } from "@/lib/display";
 import type { MarketRow as Row } from "@/lib/types";
 import { ChangeCell } from "./ChangeCell";
 import { ChartFrame } from "./ChartFrame";
+import { TickerIcon } from "./TickerIcon";
 
 const TickerCell = styled.td`
   padding: 14px 12px;
@@ -20,6 +21,12 @@ const TickerCell = styled.td`
   max-width: 300px;
   white-space: normal;
   vertical-align: middle;
+`;
+
+const TickerHead = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 9px;
 `;
 
 const TickerLink = styled.a`
@@ -72,14 +79,17 @@ export function MarketRow({ row }: { row: Row }) {
   return (
     <tr>
       <TickerCell>
-        <TickerLink
-          href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={tooltip}
-        >
-          {row.symbol}
-        </TickerLink>
+        <TickerHead>
+          <TickerIcon symbol={row.symbol} />
+          <TickerLink
+            href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={tooltip}
+          >
+            {row.symbol}
+          </TickerLink>
+        </TickerHead>
         <RuDesc>{getRuDescription(row)}</RuDesc>
       </TickerCell>
       <PriceCell>{fmtPrice(row.yest)}</PriceCell>
