@@ -5,6 +5,8 @@
 // `groupFills()` — they are never stored, which keeps dedupe/edit/delete
 // trivial and the math deterministic.
 
+import type { RiskSettings } from "./risk";
+
 export type Side = "buy" | "sell";
 export type Direction = "long" | "short";
 
@@ -76,6 +78,12 @@ export interface BlotterState {
   fills: Fill[];
   /** Notes keyed by Trade.id. */
   tradeNotes: Record<string, string>;
+  /**
+   * Risk Control settings keyed by Exchange.id. Optional/back-compat: absent in
+   * older files (coalesced to {} on read). Exchanges without an entry fall back
+   * to DEFAULT_RISK_SETTINGS via getRiskSettings().
+   */
+  riskSettings?: Record<string, RiskSettings>;
 }
 
 /** Raw row returned by the LLM, before date/timezone resolution. */

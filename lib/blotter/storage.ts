@@ -1,10 +1,11 @@
+import type { RiskSettings } from "./risk";
 import type { BlotterApiError, BlotterState, Exchange, Fill } from "./types";
 
 // Client-side API for the server-stored journal (data/blotter.json behind
 // /api/blotter/*). Replaces the old localStorage persistence.
 
 export function emptyBlotterState(): BlotterState {
-  return { version: 2, exchanges: [], fills: [], tradeNotes: {} };
+  return { version: 2, exchanges: [], fills: [], tradeNotes: {}, riskSettings: {} };
 }
 
 async function parseError(res: Response, fallback: string): Promise<string> {
@@ -93,4 +94,25 @@ export async function apiDeleteExchange(id: string): Promise<void> {
     body: JSON.stringify({ id }),
   });
   await expectOk(res, "Не удалось удалить биржу.");
+}
+
+export async function apiSaveRiskSettings(
+  exchangeId: string,
+  settings: RiskSettings,
+): Promise<void> {
+  const res = await fetch("/api/blotter/risk", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ exchangeId, settings }),
+  });
+  await expectOk(res, "Не удалось сохранить риск-настройки.");
+}
+
+export async function apiResetRiskSettings(exchangeId: string): Promise<void> {
+  const res = await fetch("/api/blotter/risk", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ exchangeId }),
+  });
+  await expectOk(res, "Не удалось сбросить риск-настройки.");
 }

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+import type { RiskSettings } from "./risk";
 import type { BlotterState, Exchange, Fill } from "./types";
 
 // Server-side persistence: one pretty-printed JSON file holding the whole
@@ -16,7 +17,7 @@ function dataPath(): string {
 }
 
 function emptyState(): BlotterState {
-  return { version: 2, exchanges: [], fills: [], tradeNotes: {} };
+  return { version: 2, exchanges: [], fills: [], tradeNotes: {}, riskSettings: {} };
 }
 
 /**
@@ -52,6 +53,7 @@ function readState(): BlotterState {
       exchanges?: unknown;
       fills?: unknown;
       tradeNotes?: unknown;
+      riskSettings?: unknown;
     };
     if (!parsed || !Array.isArray(parsed.fills)) throw new Error("unexpected shape");
     if (parsed.version === 1) return migrateV1(parsed);
@@ -65,6 +67,10 @@ function readState(): BlotterState {
       tradeNotes:
         parsed.tradeNotes && typeof parsed.tradeNotes === "object"
           ? (parsed.tradeNotes as Record<string, string>)
+          : {},
+      riskSettings:
+        parsed.riskSettings && typeof parsed.riskSettings === "object"
+          ? (parsed.riskSettings as Record<string, RiskSettings>)
           : {},
     };
   } catch {
@@ -162,5 +168,29 @@ export function storeDeleteExchange(id: string): void {
   for (const tradeId of Object.keys(state.tradeNotes)) {
     if (removedFillIds.has(tradeId)) delete state.tradeNotes[tradeId];
   }
+  if (state.riskSettings) delete state.riskSettings[id];
   writeState(state);
+}
+
+/** Upsert per-exchange risk settings. Returns null if the exchange is unknown. */
+export function storeSetRiskSettings(
+  exchangeId: string,
+  settings: RiskSettings,
+): RiskSettings | null {
+  const state = readState();
+  if (!state.exchanges.some((e) => e.id === exchangeId)) return null;
+  state.riskSettings = { ...(state.riskSettings ?? {}), [exchangeId]: settings };
+  writeState(state);
+  return settings;
+}
+
+/** Drop per-exchange overrides so the exchange falls back to defaults. */
+export function storeResetRiskSettings(exchangeId: string): void {
+  const state = readState();
+  if (state.riskSettings && exchangeId in state.riskSettings) {
+    const next = { ...state.riskSettings };
+    delete next[exchangeId];
+    state.riskSettings = next;
+    writeState(state);
+  }
 }

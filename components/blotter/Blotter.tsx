@@ -5,13 +5,16 @@ import styled from "styled-components";
 
 import { groupFills } from "@/lib/blotter/grouping";
 import { computeExchangeSummaries, computeStats } from "@/lib/blotter/stats";
+import type { RiskSettings } from "@/lib/blotter/risk";
 import {
   apiAddExchange,
   apiAddFills,
   apiClearAll,
   apiDeleteExchange,
   apiDeleteFills,
+  apiResetRiskSettings,
   apiSaveNote,
+  apiSaveRiskSettings,
   apiUpdateExchange,
   fetchBlotterState,
 } from "@/lib/blotter/storage";
@@ -21,6 +24,8 @@ import { EquityCurve } from "./EquityCurve";
 import { ExchangeManager } from "./ExchangeManager";
 import { ExchangesPanel } from "./ExchangesPanel";
 import { ImportPanel, readImageFile, type PastedImage } from "./ImportPanel";
+import { RiskPanel } from "./RiskPanel";
+import { RiskSettingsModal } from "./RiskSettingsModal";
 import { StatsBar } from "./StatsBar";
 import { TradeDetails } from "./TradeDetails";
 import { TradesTable } from "./TradesTable";
@@ -150,6 +155,7 @@ export function Blotter() {
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
+  const [riskOpen, setRiskOpen] = useState(false);
   const [pendingImage, setPendingImage] = useState<PastedImage | null>(null);
   const [activeExchangeId, setActiveExchangeId] = useState<string | "all">("all");
 
@@ -398,17 +404,44 @@ export function Blotter() {
           for (const k of Object.keys(tradeNotes)) {
             if (removedFillIds.has(k)) delete tradeNotes[k];
           }
+          const riskSettings = { ...(s.riskSettings ?? {}) };
+          delete riskSettings[ex.id];
           return {
             ...s,
             exchanges: s.exchanges.filter((e) => e.id !== ex.id),
             fills: s.fills.filter((f) => f.exchangeId !== ex.id),
             tradeNotes,
+            riskSettings,
           };
         },
         () => apiDeleteExchange(ex.id),
       );
     },
     [mutate, tradeCountByExchange],
+  );
+
+  const saveRiskSettings = useCallback(
+    (exchangeId: string, settings: RiskSettings) => {
+      mutate(
+        (s) => ({ ...s, riskSettings: { ...(s.riskSettings ?? {}), [exchangeId]: settings } }),
+        () => apiSaveRiskSettings(exchangeId, settings),
+      );
+    },
+    [mutate],
+  );
+
+  const resetRiskSettings = useCallback(
+    (exchangeId: string) => {
+      mutate(
+        (s) => {
+          const riskSettings = { ...(s.riskSettings ?? {}) };
+          delete riskSettings[exchangeId];
+          return { ...s, riskSettings };
+        },
+        () => apiResetRiskSettings(exchangeId),
+      );
+    },
+    [mutate],
   );
 
   return (
@@ -454,6 +487,13 @@ export function Blotter() {
             onManage={() => setManagerOpen(true)}
           />
           <StatsBar stats={stats} capital={capital} />
+          <RiskPanel
+            activeExchangeId={activeExchangeId}
+            exchanges={exchanges}
+            trades={trades}
+            riskSettings={state.riskSettings}
+            onEditSettings={() => setRiskOpen(true)}
+          />
           <EquityCurve trades={visibleTrades} capital={capital} />
           <TradesTable
             trades={visibleTrades}
@@ -488,6 +528,17 @@ export function Blotter() {
           onUpdate={updateExchange}
           onDelete={deleteExchange}
           onClose={() => setManagerOpen(false)}
+        />
+      )}
+
+      {riskOpen && (
+        <RiskSettingsModal
+          exchanges={exchanges}
+          riskSettings={state?.riskSettings}
+          initialExchangeId={activeExchangeId === "all" ? null : activeExchangeId}
+          onSave={saveRiskSettings}
+          onReset={resetRiskSettings}
+          onClose={() => setRiskOpen(false)}
         />
       )}
 

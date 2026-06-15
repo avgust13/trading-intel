@@ -1,7 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import styled from "styled-components";
+
+import { groupFills } from "@/lib/blotter/grouping";
+import { canOpenTrade, computeRiskState, getRiskSettings, type RiskStatus } from "@/lib/blotter/risk";
+import { fetchBlotterState } from "@/lib/blotter/storage";
+import type { BlotterState } from "@/lib/blotter/types";
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -32,6 +37,12 @@ function plain(n: number): string {
 function pctStr(n: number): string {
   if (!Number.isFinite(n)) return "—";
   return `${n.toFixed(2)}%`;
+}
+
+function statusTone(s: RiskStatus): Tone {
+  if (s === "ACTIVE") return "green";
+  if (s.startsWith("RISK_LOCKED")) return "red";
+  return "accent"; // WARNING_*
 }
 
 const RISK_RULES = [
@@ -293,6 +304,44 @@ const Footnote = styled.div`
   line-height: 1.5;
 `;
 
+const GateSelect = styled.select`
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid ${({ theme }) => theme.colors.border};
+  background: ${({ theme }) => theme.colors.bg};
+  color: ${({ theme }) => theme.colors.fg};
+  font-size: 14px;
+
+  &:focus {
+    outline: none;
+    border-color: ${({ theme }) => theme.colors.accent};
+  }
+`;
+
+const GateBanner = styled.div<{ $tone: "green" | "red" | "muted" }>`
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: ${({ theme }) => theme.colors.fg};
+  border: 1px solid
+    ${({ theme, $tone }) =>
+      $tone === "green"
+        ? `${theme.colors.green}66`
+        : $tone === "red"
+          ? `${theme.colors.red}66`
+          : theme.colors.border};
+  background: ${({ theme, $tone }) =>
+    $tone === "green"
+      ? `${theme.colors.green}14`
+      : $tone === "red"
+        ? `${theme.colors.red}14`
+        : "transparent"};
+`;
+
 /* ----------------------------------------------------------------------------
  * Component
  * -------------------------------------------------------------------------- */
@@ -304,6 +353,44 @@ export function RiskCalculator() {
   const [entry, setEntry] = useState("100");
   const [stop, setStop] = useState("95");
   const [tp, setTp] = useState("110");
+
+  // Risk-limit gate: read the blotter journal (read-only) to check a prospective
+  // trade against the selected exchange's daily/weekly/giveback limits.
+  const [blotterState, setBlotterState] = useState<BlotterState | null>(null);
+  const [selExId, setSelExId] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    fetchBlotterState()
+      .then((s) => {
+        if (alive) setBlotterState(s);
+      })
+      .catch((err: unknown) => {
+        console.error("[RiskCalculator] failed to load blotter state:", err);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Default / repair the selected exchange once the journal loads.
+  useEffect(() => {
+    if (!blotterState) return;
+    setSelExId((prev) =>
+      prev && blotterState.exchanges.some((e) => e.id === prev)
+        ? prev
+        : (blotterState.exchanges[0]?.id ?? ""),
+    );
+  }, [blotterState]);
+
+  const riskState = useMemo(() => {
+    if (!blotterState) return null;
+    const ex = blotterState.exchanges.find((x) => x.id === selExId);
+    if (!ex) return null;
+    const exTrades = groupFills(blotterState.fills).filter((tr) => tr.exchangeId === ex.id);
+    const settings = getRiskSettings(blotterState.riskSettings, ex.id);
+    return computeRiskState(exTrades, settings, ex.capital);
+  }, [blotterState, selExId]);
 
   const bal = num(balance);
   const risk = num(riskPct);
@@ -325,6 +412,10 @@ export function RiskCalculator() {
   const rr = valid && hasTp ? rewardDist / stopDist : NaN;
   const profit = valid && hasTp ? size * rewardDist : NaN;
   const profitPct = valid && hasTp && bal > 0 ? (profit / bal) * 100 : NaN;
+
+  // The dollars at risk on this trade = the gate's estimatedRisk.
+  const gateRisk = Number.isFinite(riskAmt) && riskAmt > 0 ? riskAmt : null;
+  const gate = riskState && gateRisk !== null ? canOpenTrade(riskState, gateRisk) : null;
 
   const warns: string[] = [];
   if (e > 0 && s > 0) {
@@ -450,6 +541,60 @@ export function RiskCalculator() {
           ))}
         </Panel>
       </Grid>
+
+      {blotterState && blotterState.exchanges.length > 0 && (
+        <Section>
+          <SectionTitle>Проверка риск-лимитов</SectionTitle>
+
+          <FieldWrap>
+            <Label>Биржа (из журнала)</Label>
+            <GateSelect value={selExId} onChange={(ev) => setSelExId(ev.target.value)}>
+              {blotterState.exchanges.map((ex) => (
+                <option key={ex.id} value={ex.id}>
+                  {ex.name}
+                </option>
+              ))}
+            </GateSelect>
+          </FieldWrap>
+
+          {riskState && (
+            <>
+              <GateBanner $tone={gate ? (gate.allowed ? "green" : "red") : "muted"}>
+                {gate
+                  ? gate.allowed
+                    ? `✅ Можно открыть сделку с риском ${money(gateRisk ?? 0)}`
+                    : `⛔ ${gate.reason}`
+                  : "Введите баланс, риск, вход и стоп — проверю сделку по лимитам."}
+              </GateBanner>
+
+              <StatRow>
+                <StatLabel>Risk status</StatLabel>
+                <StatValue $tone={statusTone(riskState.status)}>{riskState.status}</StatValue>
+              </StatRow>
+              <StatRow>
+                <StatLabel>Allowed risk per trade</StatLabel>
+                <StatValue $tone="accent">{money(riskState.allowedRiskPerTrade)}</StatValue>
+              </StatRow>
+              <StatRow>
+                <StatLabel>Remaining daily risk</StatLabel>
+                <StatValue>{money(riskState.remainingDailyRisk)}</StatValue>
+              </StatRow>
+              <StatRow>
+                <StatLabel>Remaining weekly risk</StatLabel>
+                <StatValue>{money(riskState.remainingWeeklyRisk)}</StatValue>
+              </StatRow>
+              <StatRow>
+                <StatLabel>P&L сегодня / неделя</StatLabel>
+                <StatValue
+                  $tone={riskState.totalPnLToday > 0 ? "green" : riskState.totalPnLToday < 0 ? "red" : "fg"}
+                >
+                  {money(riskState.totalPnLToday)} / {money(riskState.totalPnLWeek)}
+                </StatValue>
+              </StatRow>
+            </>
+          )}
+        </Section>
+      )}
 
       <Section>
         <SectionTitle>Правила риска</SectionTitle>
