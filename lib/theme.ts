@@ -25,6 +25,15 @@ export interface AppTheme {
     centralBank: string;
     crypto: string;
   };
+  /** Shared page-width tokens so every tab uses horizontal space consistently. */
+  layout: {
+    /** Max content width for standard (stacked) tabs. */
+    content: string;
+    /** Max width for the wide two-pane Risk Calculator. */
+    wide: string;
+    /** Fluid horizontal page padding. */
+    gutter: string;
+  };
 }
 
 export const theme: AppTheme = {
@@ -50,5 +59,10 @@ export const theme: AppTheme = {
     earnings: "#60a5fa", // blue — earnings
     centralBank: "#a78bfa", // purple — Fed / central banks
     crypto: "#22c55e", // green — crypto
+  },
+  layout: {
+    content: "1280px",
+    wide: "1500px",
+    gutter: "clamp(16px, 4vw, 40px)",
   },
 };

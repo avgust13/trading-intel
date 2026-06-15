@@ -26,6 +26,13 @@ const Bar = styled.nav`
   padding: 0 8px;
   background: ${({ theme }) => theme.colors.bg};
   border-bottom: 1px solid ${({ theme }) => theme.colors.border};
+  /* On very narrow screens the tabs scroll horizontally instead of forcing the
+     whole page wider. */
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
 `;
 
 const TabButton = styled.button<{ $active: boolean }>`

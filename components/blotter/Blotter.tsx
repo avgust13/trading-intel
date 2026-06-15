@@ -34,9 +34,9 @@ import { TradesTable } from "./TradesTable";
 const DISPLAY_TZ: TzMode = "local";
 
 const Page = styled.div`
-  max-width: 1100px;
+  max-width: ${({ theme }) => theme.layout.content};
   margin: 0 auto;
-  padding: 24px 16px 64px;
+  padding: 24px ${({ theme }) => theme.layout.gutter} 64px;
 `;
 
 const Header = styled.div`

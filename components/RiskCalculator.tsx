@@ -6,7 +6,9 @@ import styled from "styled-components";
 import { groupFills } from "@/lib/blotter/grouping";
 import { canOpenTrade, computeRiskState, getRiskSettings, type RiskStatus } from "@/lib/blotter/risk";
 import { fetchBlotterState } from "@/lib/blotter/storage";
-import type { BlotterState } from "@/lib/blotter/types";
+import type { BlotterState, CandleInterval } from "@/lib/blotter/types";
+import { TICKERS } from "@/lib/tickers";
+import { RiskChart } from "./RiskChart";
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -45,10 +47,20 @@ function statusTone(s: RiskStatus): Tone {
   return "accent"; // WARNING_*
 }
 
-// Remember the last-used exchange + risk % across sessions. Reads/writes are
-// guarded so a locked-down localStorage (private mode) silently no-ops.
+// Remember the last-used exchange + risk % + chart symbol/interval across
+// sessions. Reads/writes are guarded so a locked-down localStorage (private
+// mode) silently no-ops.
 const LS_EXCHANGE = "rc.exchangeId";
 const LS_RISK = "rc.riskPct";
+const LS_SYMBOL = "rc.symbol";
+const LS_INTERVAL = "rc.interval";
+
+const INTERVALS: CandleInterval[] = ["1m", "5m", "15m", "1h", "1d"];
+
+/** A finite number, or null. */
+function fin(n: number): number | null {
+  return Number.isFinite(n) ? n : null;
+}
 function lsGet(key: string): string | null {
   try {
     return window.localStorage.getItem(key);
@@ -77,9 +89,9 @@ const RISK_RULES = [
  * -------------------------------------------------------------------------- */
 
 const Page = styled.div`
-  max-width: 860px;
+  max-width: ${({ theme }) => theme.layout.wide};
   margin: 0 auto;
-  padding: 24px 16px 64px;
+  padding: 24px ${({ theme }) => theme.layout.gutter} 64px;
 `;
 
 const Header = styled.div`
@@ -99,13 +111,50 @@ const Subtitle = styled.div`
   font-size: 13px;
 `;
 
-const Grid = styled.div`
+// Responsive app layout. Areas reflow across three bands:
+//  • <721px      — single column (trade, result, chart, limits, rules)
+//  • 721–1023px  — trade|result side by side, chart full-width below
+//  • ≥1024px     — narrow control rail + big chart spanning all rows on the right
+const Layout = styled.div`
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "trade"
+    "result"
+    "chart"
+    "limits"
+    "rules";
 
-  @media (max-width: 720px) {
-    grid-template-columns: 1fr;
+  @media (min-width: 721px) and (max-width: 1023px) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "trade  result"
+      "chart  chart"
+      "limits limits"
+      "rules  rules";
+  }
+
+  @media (min-width: 1024px) {
+    grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
+    align-items: start;
+    grid-template-areas:
+      "trade  chart"
+      "result chart"
+      "limits chart"
+      "rules  chart";
+  }
+`;
+
+const ChartArea = styled.div`
+  grid-area: chart;
+  min-width: 0;
+
+  @media (min-width: 1024px) {
+    position: sticky;
+    top: 16px;
+    /* Tall chart that roughly fills the viewport; consumed by RiskChart's Box. */
+    --rc-chart-h: clamp(420px, calc(100vh - 120px), 820px);
   }
 `;
 
@@ -384,6 +433,73 @@ const LimitChip = styled.button`
   }
 `;
 
+const ChartTop = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+`;
+
+const TickerCol = styled.div`
+  flex: 1 1 200px;
+  min-width: 180px;
+`;
+
+const IntervalChips = styled.div`
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+`;
+
+const LoadBtn = styled.button`
+  appearance: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid ${({ theme }) => theme.colors.border};
+  background: transparent;
+  color: ${({ theme }) => theme.colors.muted};
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &:hover {
+    color: ${({ theme }) => theme.colors.fg};
+    border-color: ${({ theme }) => `${theme.colors.accent}88`};
+  }
+`;
+
+const PriceRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: ${({ theme }) => theme.colors.muted};
+  font-size: 13px;
+`;
+
+const PriceVal = styled.b`
+  color: ${({ theme }) => theme.colors.price};
+  font-family: ${({ theme }) => theme.fonts.mono};
+`;
+
+const PriceBtn = styled.button`
+  appearance: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid ${({ theme }) => `${theme.colors.accent}88`};
+  background: ${({ theme }) => `${theme.colors.accent}1f`};
+  color: ${({ theme }) => theme.colors.accent};
+
+  &:hover {
+    background: ${({ theme }) => `${theme.colors.accent}33`};
+  }
+`;
+
 /* ----------------------------------------------------------------------------
  * Component
  * -------------------------------------------------------------------------- */
@@ -395,6 +511,13 @@ export function RiskCalculator() {
   const [entry, setEntry] = useState("100");
   const [stop, setStop] = useState("95");
   const [tp, setTp] = useState("110");
+
+  // Instrument chart: typed ticker, committed ticker (what we load), interval,
+  // and the latest close reported back by the chart.
+  const [symbol, setSymbol] = useState("");
+  const [committedSymbol, setCommittedSymbol] = useState("");
+  const [interval, setInterval] = useState<CandleInterval>("1d");
+  const [lastPrice, setLastPrice] = useState<number | null>(null);
 
   // Risk-limit gate: read the blotter journal (read-only) to check a prospective
   // trade against the selected exchange's daily/weekly/giveback limits.
@@ -421,6 +544,29 @@ export function RiskCalculator() {
     const saved = lsGet(LS_RISK);
     if (saved) setRiskPct(saved);
   }, []);
+
+  // Restore the remembered chart symbol + interval on mount.
+  useEffect(() => {
+    const savedSym = lsGet(LS_SYMBOL);
+    if (savedSym) {
+      setSymbol(savedSym);
+      setCommittedSymbol(savedSym);
+    }
+    const savedIv = lsGet(LS_INTERVAL);
+    if (savedIv && (INTERVALS as string[]).includes(savedIv)) {
+      setInterval(savedIv as CandleInterval);
+    }
+  }, []);
+
+  // Debounce typing into a committed symbol (~0.5s). Explicit load uses loadNow().
+  useEffect(() => {
+    const sym = symbol.trim().toUpperCase();
+    const id = window.setTimeout(() => {
+      setCommittedSymbol(sym);
+      if (sym) lsSet(LS_SYMBOL, sym);
+    }, 500);
+    return () => window.clearTimeout(id);
+  }, [symbol]);
 
   // One-time init once the journal loads: restore the remembered exchange (or the
   // first one) and seed the balance from its capital.
@@ -465,6 +611,18 @@ export function RiskCalculator() {
     lsSet(LS_RISK, v);
   };
 
+  // Load the chart immediately (Enter / button), bypassing the debounce.
+  const loadNow = () => {
+    const sym = symbol.trim().toUpperCase();
+    setCommittedSymbol(sym);
+    if (sym) lsSet(LS_SYMBOL, sym);
+  };
+
+  const changeInterval = (iv: CandleInterval) => {
+    setInterval(iv);
+    lsSet(LS_INTERVAL, iv);
+  };
+
   const riskState = useMemo(() => {
     if (!blotterState) return null;
     const ex = blotterState.exchanges.find((x) => x.id === selExId);
@@ -473,6 +631,13 @@ export function RiskCalculator() {
     const settings = getRiskSettings(blotterState.riskSettings, ex.id);
     return computeRiskState(exTrades, settings, ex.capital);
   }, [blotterState, selExId]);
+
+  // Ticker autocomplete: curated instruments + symbols seen in the journal.
+  const tickerOptions = useMemo(() => {
+    const set = new Set<string>(TICKERS.map((tk) => tk.display));
+    for (const f of blotterState?.fills ?? []) set.add(f.symbol.toUpperCase());
+    return Array.from(set).sort();
+  }, [blotterState]);
 
   const bal = num(balance);
   const risk = num(riskPct);
@@ -529,8 +694,8 @@ export function RiskCalculator() {
         <Subtitle>Position sizing from your account risk and stop-loss</Subtitle>
       </Header>
 
-      <Grid>
-        <Panel>
+      <Layout>
+        <Panel style={{ gridArea: "trade" }}>
           <PanelTitle>Trade</PanelTitle>
 
           <SegRow>
@@ -572,7 +737,7 @@ export function RiskCalculator() {
           <FieldWrap>
             <Label>Risk per trade</Label>
             <InputWrap>
-              <Input inputMode="decimal" value={riskPct} onChange={(ev) => setRiskPct(ev.target.value)} placeholder="1" />
+              <Input inputMode="decimal" value={riskPct} onChange={(ev) => changeRisk(ev.target.value)} placeholder="1" />
               <Affix $right>%</Affix>
             </InputWrap>
             <Chips>
@@ -615,7 +780,7 @@ export function RiskCalculator() {
           </FieldWrap>
         </Panel>
 
-        <Panel>
+        <Panel style={{ gridArea: "result" }}>
           <PanelTitle>Result</PanelTitle>
 
           <Hero>
@@ -679,11 +844,65 @@ export function RiskCalculator() {
             <Warn key={w}>⚠ {w}</Warn>
           ))}
         </Panel>
-      </Grid>
 
-      {blotterState && blotterState.exchanges.length > 0 && (
-        <Section>
-          <SectionTitle>Проверка риск-лимитов</SectionTitle>
+        <ChartArea>
+          <SectionTitle>График</SectionTitle>
+        <ChartTop>
+          <TickerCol>
+            <Label>Тикер</Label>
+            <InputWrap>
+              <Input
+                list="rc-tickers"
+                value={symbol}
+                placeholder="SPY"
+                onChange={(ev) => setSymbol(ev.target.value)}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter") loadNow();
+                }}
+              />
+            </InputWrap>
+            <datalist id="rc-tickers">
+              {tickerOptions.map((sym) => (
+                <option key={sym} value={sym} />
+              ))}
+            </datalist>
+          </TickerCol>
+          <IntervalChips>
+            {INTERVALS.map((iv) => (
+              <Chip key={iv} $active={interval === iv} type="button" onClick={() => changeInterval(iv)}>
+                {iv}
+              </Chip>
+            ))}
+          </IntervalChips>
+          <LoadBtn type="button" onClick={loadNow}>
+            Обновить
+          </LoadBtn>
+        </ChartTop>
+
+        {lastPrice !== null && (
+          <PriceRow>
+            <span>
+              Текущая цена: <PriceVal>{money(lastPrice)}</PriceVal>
+            </span>
+            <PriceBtn type="button" onClick={() => setEntry(String(lastPrice))}>
+              → во вход
+            </PriceBtn>
+          </PriceRow>
+        )}
+
+          <RiskChart
+            symbol={committedSymbol}
+            interval={interval}
+            entry={fin(e)}
+            stop={fin(s)}
+            tp={fin(t)}
+            onLoaded={setLastPrice}
+          />
+        </ChartArea>
+
+        {blotterState && blotterState.exchanges.length > 0 && (
+          <Section style={{ gridArea: "limits" }}>
+            <SectionTitle>Проверка риск-лимитов</SectionTitle>
 
           {!riskState && (
             <Hint>Выберите биржу в поле «Биржа (журнал)» сверху, чтобы проверить сделку по лимитам.</Hint>
@@ -728,8 +947,8 @@ export function RiskCalculator() {
         </Section>
       )}
 
-      <Section>
-        <SectionTitle>Правила риска</SectionTitle>
+        <Section style={{ gridArea: "rules" }}>
+          <SectionTitle>Правила риска</SectionTitle>
         <TipList>
           {RISK_RULES.map((r) => (
             <TipLi key={r}>{r}</TipLi>
@@ -739,7 +958,8 @@ export function RiskCalculator() {
           Расчёт в «единицах»: считается, что 1 единица даёт $1 P&amp;L на каждый $1 движения цены
           (акции, крипта, спот). Для форекса и фьючерсов масштабируй по стоимости пункта / тика.
         </Footnote>
-      </Section>
+        </Section>
+      </Layout>
     </Page>
   );
 }
