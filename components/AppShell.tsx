@@ -1,42 +1,38 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import type { ReactNode } from "react";
 import styled from "styled-components";
 
-import { Blotter } from "./blotter/Blotter";
-import { MarketCalendar } from "./calendar/MarketCalendar";
-import { Dashboard } from "./Dashboard";
-import { RiskCalculator } from "./RiskCalculator";
-import { Sessions } from "./Sessions";
-
-type TabKey = "overview" | "sessions" | "calendar" | "risk" | "blotter";
-
-// Each tab carries a lucide-style stroke glyph (24x24 viewBox), authored the same
-// way as the per-symbol icons in components/TickerIcon.tsx. The left rail shows the
-// glyph only; the human-readable label flies out as a tooltip on hover.
-const TABS: { key: TabKey; label: string; icon: string }[] = [
+// Primary navigation for the app. Each entry is a route segment, shown in the left
+// rail as a lucide-style glyph (authored the same way as components/TickerIcon.tsx);
+// the human-readable label flies out as a tooltip on hover. Active state is derived
+// from the URL via usePathname so deep-links and browser back/forward stay in sync
+// with the highlight.
+const NAV: { href: string; label: string; icon: string }[] = [
   {
-    key: "overview",
+    href: "/",
     label: "Overview",
     icon: '<path d="M3 3v18h18"/><path d="M7 16v-5"/><path d="M12 16V8"/><path d="M17 16v-3"/>',
   },
   {
-    key: "sessions",
+    href: "/sessions",
     label: "Sessions",
     icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
   },
   {
-    key: "calendar",
+    href: "/calendar",
     label: "Calendar",
     icon: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>',
   },
   {
-    key: "risk",
+    href: "/risk",
     label: "Risk",
     icon: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   },
   {
-    key: "blotter",
+    href: "/blotter",
     label: "Blotter",
     icon: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
   },
@@ -92,15 +88,14 @@ const Tip = styled.span`
   transition: opacity 120ms ease;
 `;
 
-const TabButton = styled.button<{ $active: boolean }>`
+const NavLink = styled(Link)<{ $active: boolean }>`
   position: relative;
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
-  appearance: none;
-  border: none;
   border-radius: 8px;
+  text-decoration: none;
   cursor: pointer;
   background: ${({ theme, $active }) => ($active ? `${theme.colors.accent}22` : "transparent")};
   color: ${({ theme, $active }) => ($active ? theme.colors.accent : theme.colors.muted)};
@@ -147,38 +142,35 @@ const Main = styled.div`
   min-width: 0;
 `;
 
-export function Tabs() {
-  const [active, setActive] = useState<TabKey>("overview");
+export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
 
   return (
     <Shell>
       <Rail>
-        {TABS.map((t) => (
-          <TabButton
-            key={t.key}
-            type="button"
-            $active={active === t.key}
-            aria-current={active === t.key ? "page" : undefined}
-            aria-label={t.label}
-            onClick={() => setActive(t.key)}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              focusable="false"
-              dangerouslySetInnerHTML={{ __html: t.icon }}
-            />
-            <Tip>{t.label}</Tip>
-          </TabButton>
-        ))}
+        {NAV.map((item) => {
+          const active =
+            item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+          return (
+            <NavLink
+              key={item.href}
+              href={item.href}
+              $active={active}
+              aria-current={active ? "page" : undefined}
+              aria-label={item.label}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+                dangerouslySetInnerHTML={{ __html: item.icon }}
+              />
+              <Tip>{item.label}</Tip>
+            </NavLink>
+          );
+        })}
       </Rail>
-      <Main>
-        {active === "overview" && <Dashboard />}
-        {active === "sessions" && <Sessions />}
-        {active === "calendar" && <MarketCalendar />}
-        {active === "risk" && <RiskCalculator />}
-        {active === "blotter" && <Blotter />}
-      </Main>
+      <Main>{children}</Main>
     </Shell>
   );
 }
