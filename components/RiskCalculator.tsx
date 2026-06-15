@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import styled from "styled-components";
 
 import { groupFills } from "@/lib/blotter/grouping";
@@ -43,6 +43,25 @@ function statusTone(s: RiskStatus): Tone {
   if (s === "ACTIVE") return "green";
   if (s.startsWith("RISK_LOCKED")) return "red";
   return "accent"; // WARNING_*
+}
+
+// Remember the last-used exchange + risk % across sessions. Reads/writes are
+// guarded so a locked-down localStorage (private mode) silently no-ops.
+const LS_EXCHANGE = "rc.exchangeId";
+const LS_RISK = "rc.riskPct";
+function lsGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function lsSet(key: string, val: string): void {
+  try {
+    window.localStorage.setItem(key, val);
+  } catch {
+    /* ignore */
+  }
 }
 
 const RISK_RULES = [
@@ -342,6 +361,29 @@ const GateBanner = styled.div<{ $tone: "green" | "red" | "muted" }>`
         : "transparent"};
 `;
 
+const Hint = styled.div`
+  margin-top: 6px;
+  color: ${({ theme }) => theme.colors.muted};
+  font-size: 11.5px;
+  line-height: 1.4;
+`;
+
+const LimitChip = styled.button`
+  appearance: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid ${({ theme }) => `${theme.colors.accent}88`};
+  background: ${({ theme }) => `${theme.colors.accent}1f`};
+  color: ${({ theme }) => theme.colors.accent};
+
+  &:hover {
+    background: ${({ theme }) => `${theme.colors.accent}33`};
+  }
+`;
+
 /* ----------------------------------------------------------------------------
  * Component
  * -------------------------------------------------------------------------- */
@@ -358,6 +400,7 @@ export function RiskCalculator() {
   // trade against the selected exchange's daily/weekly/giveback limits.
   const [blotterState, setBlotterState] = useState<BlotterState | null>(null);
   const [selExId, setSelExId] = useState("");
+  const initRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -373,15 +416,54 @@ export function RiskCalculator() {
     };
   }, []);
 
-  // Default / repair the selected exchange once the journal loads.
+  // Restore the remembered risk % on mount (read-only — writes happen in changeRisk).
   useEffect(() => {
-    if (!blotterState) return;
-    setSelExId((prev) =>
-      prev && blotterState.exchanges.some((e) => e.id === prev)
-        ? prev
-        : (blotterState.exchanges[0]?.id ?? ""),
-    );
+    const saved = lsGet(LS_RISK);
+    if (saved) setRiskPct(saved);
+  }, []);
+
+  // One-time init once the journal loads: restore the remembered exchange (or the
+  // first one) and seed the balance from its capital.
+  useEffect(() => {
+    if (!blotterState || initRef.current) return;
+    initRef.current = true;
+    const saved = lsGet(LS_EXCHANGE);
+    // "" = explicitly remembered "Manual"; a known id = that exchange; otherwise
+    // (null / stale id) default to the first exchange.
+    const candidate =
+      saved === ""
+        ? ""
+        : saved && blotterState.exchanges.some((e) => e.id === saved)
+          ? saved
+          : (blotterState.exchanges[0]?.id ?? "");
+    setSelExId(candidate);
+    const ex = blotterState.exchanges.find((e) => e.id === candidate);
+    if (ex) setBalance(String(ex.capital));
   }, [blotterState]);
+
+  // If the selected exchange disappears later, fall back to "Manual".
+  useEffect(() => {
+    if (selExId && blotterState && !blotterState.exchanges.some((e) => e.id === selExId)) {
+      setSelExId("");
+    }
+  }, [blotterState, selExId]);
+
+  const selExchange = blotterState?.exchanges.find((e) => e.id === selExId) ?? null;
+
+  // Pick an exchange: remember it and seed the balance from its capital.
+  // "Manual" (id === "") leaves the balance editable as-is.
+  const pickExchange = (id: string) => {
+    setSelExId(id);
+    lsSet(LS_EXCHANGE, id);
+    const ex = blotterState?.exchanges.find((e) => e.id === id);
+    if (ex) setBalance(String(ex.capital));
+  };
+
+  // Change risk % and remember it.
+  const changeRisk = (v: string) => {
+    setRiskPct(v);
+    lsSet(LS_RISK, v);
+  };
 
   const riskState = useMemo(() => {
     if (!blotterState) return null;
@@ -428,6 +510,17 @@ export function RiskCalculator() {
   }
   if (risk > 5) warns.push("Risking more than 5% per trade is aggressive.");
   if (Number.isFinite(leverage) && leverage > 20) warns.push("Implied leverage is very high (> 20×).");
+  if (
+    riskState &&
+    riskState.canOpen &&
+    Number.isFinite(riskAmt) &&
+    riskState.allowedRiskPerTrade > 0 &&
+    riskAmt > riskState.allowedRiskPerTrade
+  ) {
+    warns.push(
+      `Риск ${money(riskAmt)} превышает допустимый ${money(riskState.allowedRiskPerTrade)}${selExchange ? ` по бирже ${selExchange.name}` : ""}.`,
+    );
+  }
 
   return (
     <Page>
@@ -449,12 +542,31 @@ export function RiskCalculator() {
             </SegBtn>
           </SegRow>
 
+          {blotterState && blotterState.exchanges.length > 0 && (
+            <FieldWrap>
+              <Label>Биржа (журнал)</Label>
+              <GateSelect value={selExId} onChange={(ev) => pickExchange(ev.target.value)}>
+                <option value="">Вручную</option>
+                {blotterState.exchanges.map((ex) => (
+                  <option key={ex.id} value={ex.id}>
+                    {ex.name}
+                  </option>
+                ))}
+              </GateSelect>
+            </FieldWrap>
+          )}
+
           <FieldWrap>
             <Label>Account balance</Label>
             <InputWrap>
               <Affix>$</Affix>
               <Input inputMode="decimal" value={balance} onChange={(ev) => setBalance(ev.target.value)} placeholder="10000" />
             </InputWrap>
+            {selExchange && (
+              <Hint>
+                из биржи {selExchange.name} (капитал ${selExchange.capital.toLocaleString("en-US")})
+              </Hint>
+            )}
           </FieldWrap>
 
           <FieldWrap>
@@ -465,10 +577,19 @@ export function RiskCalculator() {
             </InputWrap>
             <Chips>
               {RISK_PRESETS.map((p) => (
-                <Chip key={p} $active={riskPct === p} type="button" onClick={() => setRiskPct(p)}>
+                <Chip key={p} $active={riskPct === p} type="button" onClick={() => changeRisk(p)}>
                   {p}%
                 </Chip>
               ))}
+              {riskState && riskState.allowedRiskPerTrade > 0 && bal > 0 && (
+                <LimitChip
+                  type="button"
+                  title="Подставить допустимый риск из лимитов"
+                  onClick={() => changeRisk(((riskState.allowedRiskPerTrade / bal) * 100).toFixed(2))}
+                >
+                  Лимит {money(riskState.allowedRiskPerTrade)}
+                </LimitChip>
+              )}
             </Chips>
           </FieldWrap>
 
@@ -500,13 +621,31 @@ export function RiskCalculator() {
           <Hero>
             <HeroLabel>Position size</HeroLabel>
             <HeroValue>{valid ? `${units(size)} units` : "—"}</HeroValue>
-            <HeroSub>{valid ? `≈ ${money(notional)} notional` : "Enter balance, risk, entry & stop"}</HeroSub>
+            <HeroSub>
+              {valid
+                ? `≈ ${money(notional)} notional · ${pctStr((notional / bal) * 100)} от баланса`
+                : "Enter balance, risk, entry & stop"}
+            </HeroSub>
           </Hero>
 
           <StatRow>
             <StatLabel>Risk amount (max loss)</StatLabel>
             <StatValue $tone="red">{Number.isFinite(riskAmt) ? money(riskAmt) : "—"}</StatValue>
           </StatRow>
+
+          {riskState && (
+            <StatRow>
+              <StatLabel>Макс. под лимит</StatLabel>
+              <StatValue $tone="accent">
+                {valid && riskState.allowedRiskPerTrade > 0
+                  ? `${units(riskState.allowedRiskPerTrade / stopDist)} units`
+                  : "—"}
+                {valid && riskState.allowedRiskPerTrade > 0 && (
+                  <StatSub>({money(riskState.allowedRiskPerTrade)})</StatSub>
+                )}
+              </StatValue>
+            </StatRow>
+          )}
 
           <StatRow>
             <StatLabel>Stop distance</StatLabel>
@@ -546,16 +685,9 @@ export function RiskCalculator() {
         <Section>
           <SectionTitle>Проверка риск-лимитов</SectionTitle>
 
-          <FieldWrap>
-            <Label>Биржа (из журнала)</Label>
-            <GateSelect value={selExId} onChange={(ev) => setSelExId(ev.target.value)}>
-              {blotterState.exchanges.map((ex) => (
-                <option key={ex.id} value={ex.id}>
-                  {ex.name}
-                </option>
-              ))}
-            </GateSelect>
-          </FieldWrap>
+          {!riskState && (
+            <Hint>Выберите биржу в поле «Биржа (журнал)» сверху, чтобы проверить сделку по лимитам.</Hint>
+          )}
 
           {riskState && (
             <>
